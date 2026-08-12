@@ -11,7 +11,42 @@ import sys
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
+import requests
 import config
+from yfinance_client import get_us_gex_data
+
+def send_telegram_message(text: str):
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": config.TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    requests.post(url, json=payload)
+
+def main():
+    report_lines = ["📊 **每日美股 Gamma 關鍵位點簡報**\n"]
+    
+    for symbol in config.WATCHLIST:
+        data = get_us_gex_data(symbol)
+        if not data:
+            continue
+            
+        status_icon = "🟢" if "Positive" in data['regime'] else "🔴"
+        report_lines.append(
+            f"**【{data['symbol']}】** 現價: `${data['spot_price']}`\n"
+            f"• Regime: {status_icon} {data['regime']}\n"
+            f"• Gamma Flip: `${data['gamma_flip']}`\n"
+            f"• Call Wall (阻力): `${data['call_wall']}`\n"
+            f"• Put Wall (支撐): `${data['put_wall']}`\n"
+            f"• 到期日: `{data['exp_date']}`\n"
+        )
+        
+    full_message = "\n".join(report_lines)
+    send_telegram_message(full_message)
+
+if __name__ == "__main__":
+    main()
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
