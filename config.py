@@ -5,14 +5,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Upstox ---
-UPSTOX_API_KEY: str = os.getenv("UPSTOX_API_KEY", "")
-UPSTOX_API_SECRET: str = os.getenv("UPSTOX_API_SECRET", "")
-UPSTOX_ACCESS_TOKEN: str = os.getenv("UPSTOX_ACCESS_TOKEN", "")
-UPSTOX_REDIRECT_URI: str = os.getenv("UPSTOX_REDIRECT_URI", "http://localhost:5000/callback")
-UPSTOX_AUTH_URL: str = "https://api.upstox.com/v2/login/authorization/dialog"
-UPSTOX_TOKEN_URL: str = "https://api.upstox.com/v2/login/authorization/token"
+# --- 美股觀察清單 ---
+WATCHLIST = ["QQQ", "SPY", "NVDA", "GOOG", "TSLA", "SMH"]
 
+# --- Telegram 配置 ---
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 # --- Telegram ---
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
