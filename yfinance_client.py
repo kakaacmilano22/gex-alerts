@@ -13,7 +13,7 @@ def calculate_gamma(S, K, T, r, sigma):
 
 def get_us_gex_data(symbol: str):
     """
-    使用 yfinance 獲取美股前 6 個到期日數據，加總計算全網 GEX、Walls 與 Flip
+    使用 yfinance 獲取美股期權鏈，加入現價 ±30% 履約價過濾，精準計算 GEX、Walls 與 Flip
     """
     tk = yf.Ticker(symbol)
     
@@ -30,22 +30,28 @@ def get_us_gex_data(symbol: str):
     if not expirations:
         return None
         
-    # 取前 6 個到期日（約涵蓋未來 1 個月主力持倉）
+    # 取前 6 個到期日（約涵蓋未來 1 個月）
     target_expirations = tk.options[:6]
     today = pd.Timestamp.now()
     r = 0.045  # 無風險利率 4.5%
     
+    # 設定合理履約價區間 (現價的 70% ~ 130%)
+    min_strike = spot_price * 0.70
+    max_strike = spot_price * 1.30
+    
     all_calls_gex = []
     all_puts_gex = []
     
-    # 逐一計算每個到期日的 Gamma 並彙總
     for exp_date in target_expirations:
         try:
             opt = tk.option_chain(exp_date)
             calls = opt.calls.copy()
             puts = opt.puts.copy()
             
-            # 針對當前到期日計算天數 T (年)
+            # 過濾無效履約價
+            calls = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
+            puts = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
+            
             exp_dt = pd.to_datetime(exp_date)
             T = max((exp_dt - today).days, 1) / 365.0
             
@@ -73,18 +79,17 @@ def get_us_gex_data(symbol: str):
     if not all_calls_gex or not all_puts_gex:
         return None
         
-    # 按履約價 (strike) 加總所有到期日的 GEX
     df_calls = pd.DataFrame(all_calls_gex).groupby('strike', as_index=False).sum()
     df_puts = pd.DataFrame(all_puts_gex).groupby('strike', as_index=False).sum()
     
     df_merged = pd.merge(df_calls, df_puts, on='strike', how='outer').fillna(0)
     df_merged['net_gex'] = df_merged['call_gex'] + df_merged['put_gex']
     
-    # 尋找 Key Levels (Call Wall / Put Wall)
+    # 計算 Key Levels (Call Wall / Put Wall)
     call_wall = df_merged.loc[df_merged['call_gex'].idxmax()]['strike']
     put_wall = df_merged.loc[df_merged['put_gex'].idxmin()]['strike']
     
-    # 計算 Gamma Flip (Net GEX 轉折點)
+    # 計算 Gamma Flip
     df_sorted = df_merged.sort_values('strike')
     zero_crossings = df_sorted[(df_sorted['net_gex'] * df_sorted['net_gex'].shift(1)) <= 0]
     
@@ -100,9 +105,9 @@ def get_us_gex_data(symbol: str):
         "symbol": symbol,
         "spot_price": round(spot_price, 2),
         "exp_date": exp_date_display,
-        "call_wall": call_wall,
-        "put_wall": put_wall,
-        "gamma_flip": gamma_flip,
+        "call_wall": round(call_wall, 2),
+        "put_wall": round(put_wall, 2),
+        "gamma_flip": round(gamma_flip, 2),
         "total_net_gex": round(total_net_gex, 2),
         "regime": "Positive Gamma" if total_net_gex > 0 else "Negative Gamma"
     }
