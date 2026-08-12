@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
+from datetime import datetime
 
 def calculate_gamma(S, K, T, r, sigma):
     if sigma <= 0 or T <= 0 or S <= 0 or K <= 0:
@@ -13,7 +14,7 @@ def calculate_gamma(S, K, T, r, sigma):
 
 def get_us_gex_data(symbol: str):
     """
-    使用 yfinance 獲取美股期權鏈，加入現價 ±30% 履約價過濾，精準計算 GEX、Walls 與 Flip
+    自動鎖定「本月底」及「下個月底」最後一個期權到期日並計算 GEX
     """
     tk = yf.Ticker(symbol)
     
@@ -30,12 +31,28 @@ def get_us_gex_data(symbol: str):
     if not expirations:
         return None
         
-    # 取前 6 個到期日（約涵蓋未來 1 個月）
-    target_expirations = tk.options[:6]
+    # 2. 自動判斷本月與下個月的年份及月份
+    now = datetime.now()
+    curr_year, curr_month = now.year, now.month
+    next_year, next_month = (curr_year, curr_month + 1) if curr_month < 12 else (curr_year + 1, 1)
+
+    # 取出本月及下個月的所有到期日，並選取「最後一個」（即月底/月結日）
+    curr_month_exps = [e for e in expirations if pd.to_datetime(e).year == curr_year and pd.to_datetime(e).month == curr_month]
+    next_month_exps = [e for e in expirations if pd.to_datetime(e).year == next_year and pd.to_datetime(e).month == next_month]
+
+    target_expirations = []
+    if curr_month_exps:
+        target_expirations.append(curr_month_exps[-1])  # 本月底到期日
+    if next_month_exps:
+        target_expirations.append(next_month_exps[-1])  # 下個月底到期日
+
+    if not target_expirations:
+        target_expirations = expirations[:2]
+
     today = pd.Timestamp.now()
     r = 0.045  # 無風險利率 4.5%
     
-    # 設定合理履約價區間 (現價的 70% ~ 130%)
+    # 履約價過濾區間 (現價 ±30%)
     min_strike = spot_price * 0.70
     max_strike = spot_price * 1.30
     
@@ -48,14 +65,12 @@ def get_us_gex_data(symbol: str):
             calls = opt.calls.copy()
             puts = opt.puts.copy()
             
-            # 過濾無效履約價
             calls = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
             puts = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
             
             exp_dt = pd.to_datetime(exp_date)
             T = max((exp_dt - today).days, 1) / 365.0
             
-            # 計算 Calls GEX
             for _, row in calls.iterrows():
                 strike = row['strike']
                 oi = row['openInterest'] if not math.isnan(row['openInterest']) else 0
@@ -64,7 +79,6 @@ def get_us_gex_data(symbol: str):
                 gex = gamma * oi * 100 * (spot_price ** 2) * 0.01
                 all_calls_gex.append({'strike': strike, 'call_gex': gex})
                 
-            # 計算 Puts GEX
             for _, row in puts.iterrows():
                 strike = row['strike']
                 oi = row['openInterest'] if not math.isnan(row['openInterest']) else 0
@@ -85,11 +99,9 @@ def get_us_gex_data(symbol: str):
     df_merged = pd.merge(df_calls, df_puts, on='strike', how='outer').fillna(0)
     df_merged['net_gex'] = df_merged['call_gex'] + df_merged['put_gex']
     
-    # 計算 Key Levels (Call Wall / Put Wall)
     call_wall = df_merged.loc[df_merged['call_gex'].idxmax()]['strike']
     put_wall = df_merged.loc[df_merged['put_gex'].idxmin()]['strike']
     
-    # 計算 Gamma Flip
     df_sorted = df_merged.sort_values('strike')
     zero_crossings = df_sorted[(df_sorted['net_gex'] * df_sorted['net_gex'].shift(1)) <= 0]
     
@@ -99,7 +111,7 @@ def get_us_gex_data(symbol: str):
         gamma_flip = df_sorted.iloc[(df_sorted['net_gex'].abs()).idxmin()]['strike']
         
     total_net_gex = df_merged['net_gex'].sum()
-    exp_date_display = f"{target_expirations[0]} 至 {target_expirations[-1]}"
+    exp_date_display = " & ".join(target_expirations)
     
     return {
         "symbol": symbol,
