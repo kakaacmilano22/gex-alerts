@@ -14,7 +14,7 @@ def calculate_gamma(S, K, T, r, sigma):
 
 def get_us_gex_data(symbol: str):
     """
-    自動鎖定「本月底」及「下個月底」最後一個期權到期日並計算 GEX
+    獲取美股月底及下月底期權數據，修正 Call/Put Wall 為 Open Interest 基準
     """
     tk = yf.Ticker(symbol)
     
@@ -31,33 +31,32 @@ def get_us_gex_data(symbol: str):
     if not expirations:
         return None
         
-    # 2. 自動判斷本月與下個月的年份及月份
+    # 2. 自動鎖定本月與下個月底到期日
     now = datetime.now()
     curr_year, curr_month = now.year, now.month
     next_year, next_month = (curr_year, curr_month + 1) if curr_month < 12 else (curr_year + 1, 1)
 
-    # 取出本月及下個月的所有到期日，並選取「最後一個」（即月底/月結日）
     curr_month_exps = [e for e in expirations if pd.to_datetime(e).year == curr_year and pd.to_datetime(e).month == curr_month]
     next_month_exps = [e for e in expirations if pd.to_datetime(e).year == next_year and pd.to_datetime(e).month == next_month]
 
     target_expirations = []
     if curr_month_exps:
-        target_expirations.append(curr_month_exps[-1])  # 本月底到期日
+        target_expirations.append(curr_month_exps[-1])
     if next_month_exps:
-        target_expirations.append(next_month_exps[-1])  # 下個月底到期日
+        target_expirations.append(next_month_exps[-1])
 
     if not target_expirations:
         target_expirations = expirations[:2]
 
     today = pd.Timestamp.now()
-    r = 0.045  # 無風險利率 4.5%
+    r = 0.045
     
-    # 履約價過濾區間 (現價 ±30%)
-    min_strike = spot_price * 0.70
-    max_strike = spot_price * 1.30
+    # 履約價過濾區間 (現價 ±35%)
+    min_strike = spot_price * 0.65
+    max_strike = spot_price * 1.35
     
-    all_calls_gex = []
-    all_puts_gex = []
+    all_calls_list = []
+    all_puts_list = []
     
     for exp_date in target_expirations:
         try:
@@ -71,37 +70,52 @@ def get_us_gex_data(symbol: str):
             exp_dt = pd.to_datetime(exp_date)
             T = max((exp_dt - today).days, 1) / 365.0
             
+            # 計算 Calls
             for _, row in calls.iterrows():
                 strike = row['strike']
                 oi = row['openInterest'] if not math.isnan(row['openInterest']) else 0
                 iv = row['impliedVolatility'] if not math.isnan(row['impliedVolatility']) else 0.2
                 gamma = calculate_gamma(spot_price, strike, T, r, iv)
                 gex = gamma * oi * 100 * (spot_price ** 2) * 0.01
-                all_calls_gex.append({'strike': strike, 'call_gex': gex})
+                all_calls_list.append({'strike': strike, 'call_oi': oi, 'call_gex': gex})
                 
+            # 計算 Puts
             for _, row in puts.iterrows():
                 strike = row['strike']
                 oi = row['openInterest'] if not math.isnan(row['openInterest']) else 0
                 iv = row['impliedVolatility'] if not math.isnan(row['impliedVolatility']) else 0.2
                 gamma = calculate_gamma(spot_price, strike, T, r, iv)
                 gex = -1 * gamma * oi * 100 * (spot_price ** 2) * 0.01
-                all_puts_gex.append({'strike': strike, 'put_gex': gex})
+                all_puts_list.append({'strike': strike, 'put_oi': oi, 'put_gex': gex})
                 
         except Exception:
             continue
             
-    if not all_calls_gex or not all_puts_gex:
+    if not all_calls_list or not all_puts_list:
         return None
         
-    df_calls = pd.DataFrame(all_calls_gex).groupby('strike', as_index=False).sum()
-    df_puts = pd.DataFrame(all_puts_gex).groupby('strike', as_index=False).sum()
+    df_calls = pd.DataFrame(all_calls_list).groupby('strike', as_index=False).sum()
+    df_puts = pd.DataFrame(all_puts_list).groupby('strike', as_index=False).sum()
     
     df_merged = pd.merge(df_calls, df_puts, on='strike', how='outer').fillna(0)
     df_merged['net_gex'] = df_merged['call_gex'] + df_merged['put_gex']
     
-    call_wall = df_merged.loc[df_merged['call_gex'].idxmax()]['strike']
-    put_wall = df_merged.loc[df_merged['put_gex'].idxmin()]['strike']
+    # --- 3. 精準計算 Call Wall & Put Wall (基於未平倉量 OI) ---
+    # Call Wall: 現價上方 (或包含現價) 未平倉量最大的 Call 履約價
+    otm_calls = df_merged[df_merged['strike'] >= spot_price * 0.98]
+    if not otm_calls.empty:
+        call_wall = otm_calls.loc[otm_calls['call_oi'].idxmax()]['strike']
+    else:
+        call_wall = df_merged.loc[df_merged['call_oi'].idxmax()]['strike']
+        
+    # Put Wall: 現價下方 (或包含現價) 未平倉量最大的 Put 履約價
+    otm_puts = df_merged[df_merged['strike'] <= spot_price * 1.02]
+    if not otm_puts.empty:
+        put_wall = otm_puts.loc[otm_puts['put_oi'].idxmax()]['strike']
+    else:
+        put_wall = df_merged.loc[df_merged['put_oi'].idxmax()]['strike']
     
+    # --- 4. 計算 Gamma Flip (Net GEX 正負轉折點) ---
     df_sorted = df_merged.sort_values('strike')
     zero_crossings = df_sorted[(df_sorted['net_gex'] * df_sorted['net_gex'].shift(1)) <= 0]
     
