@@ -14,7 +14,7 @@ def calculate_gamma(S, K, T, r, sigma):
 
 def get_us_gex_data(symbol: str):
     """
-    獲取美股月底及下月底期權數據（精準修正 Call/Put Wall 與 Gamma Flip）
+    獲取美股月底及下月底期權數據（優化：過濾極端尾部黑天鵝保險，回歸近價交易牆）
     """
     tk = yf.Ticker(symbol)
     
@@ -51,9 +51,9 @@ def get_us_gex_data(symbol: str):
     today = pd.Timestamp.now()
     r = 0.045
     
-    # 修正 1：將搜尋範圍縮小至現價 ±18%，排除遠期 LEAPS 與極端 OTM 尾部雜訊
-    min_strike = spot_price * 0.82
-    max_strike = spot_price * 1.18
+    # 基礎搜尋區間 (現價 ±20%)
+    min_strike = spot_price * 0.80
+    max_strike = spot_price * 1.20
     
     all_calls_list = []
     all_puts_list = []
@@ -100,22 +100,23 @@ def get_us_gex_data(symbol: str):
     df_merged = pd.merge(df_calls, df_puts, on='strike', how='outer').fillna(0)
     df_merged['net_gex'] = df_merged['call_gex'] + df_merged['put_gex']
     
-    # 修正 2：嚴格區分現價上方 (Call Wall) 與現價下方 (Put Wall)
-    # Call Wall: 嚴格 >= 現價，取 Open Interest 最大者
-    otm_calls = df_merged[df_merged['strike'] >= spot_price]
-    if not otm_calls.empty:
-        call_wall = otm_calls.loc[otm_calls['call_oi'].idxmax()]['strike']
-    else:
-        call_wall = df_merged.loc[df_merged['call_oi'].idxmax()]['strike']
-        
-    # Put Wall: 嚴格 <= 現價，取 Open Interest 最大者
-    otm_puts = df_merged[df_merged['strike'] <= spot_price]
-    if not otm_puts.empty:
-        put_wall = otm_puts.loc[otm_puts['put_oi'].idxmax()]['strike']
-    else:
-        put_wall = df_merged.loc[df_merged['put_oi'].idxmax()]['strike']
+    # --- 核心關鍵修正：限定在實戰交易區間 (現價上方 8% 內為 Call Wall，下方 8% 內為 Put Wall) ---
     
-    # 修正 3：Gamma Flip 取離「現價最近」的零點轉折，而非最遠者
+    # Call Wall: 現價 ~ 現價 + 8% 內未平倉量最大者
+    near_calls = df_merged[(df_merged['strike'] >= spot_price) & (df_merged['strike'] <= spot_price * 1.08)]
+    if not near_calls.empty:
+        call_wall = near_calls.loc[near_calls['call_oi'].idxmax()]['strike']
+    else:
+        call_wall = df_merged[df_merged['strike'] >= spot_price].loc[df_merged['call_oi'].idxmax()]['strike']
+        
+    # Put Wall: 現價 - 8% ~ 現價 內未平倉量最大者 (過濾遠處崩盤保險單)
+    near_puts = df_merged[(df_merged['strike'] <= spot_price) & (df_merged['strike'] >= spot_price * 0.92)]
+    if not near_puts.empty:
+        put_wall = near_puts.loc[near_puts['put_oi'].idxmax()]['strike']
+    else:
+        put_wall = df_merged[df_merged['strike'] <= spot_price].loc[df_merged['put_oi'].idxmax()]['strike']
+    
+    # Gamma Flip: 取離現價最近的零點轉折
     df_sorted = df_merged.sort_values('strike')
     zero_crossings = df_sorted[(df_sorted['net_gex'] * df_sorted['net_gex'].shift(1)) <= 0].copy()
     
