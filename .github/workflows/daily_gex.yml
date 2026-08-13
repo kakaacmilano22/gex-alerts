@@ -2,9 +2,10 @@ name: Daily GEX Telegram Alert
 
 on:
   schedule:
-    # 每天 UTC 13:00 (相當於香港時間 21:00，美股開盤前) 自動執行
-    - cron: '0 13 * * 1-5'
-  workflow_dispatch: # 支援在頁面上手動按「Run workflow」觸發
+    # 周一至周五 (1-5)
+    - cron: '25 13 * * 1-5' # 美股開市前 5 分鐘 (夏令)
+    - cron: '0 20 * * 1-5'  # 美股收市時 (夏令)
+  workflow_dispatch:        # 保留手動觸發按鈕
 
 jobs:
   run-gex:
