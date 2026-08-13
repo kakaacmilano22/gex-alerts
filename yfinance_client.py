@@ -14,7 +14,7 @@ def calculate_gamma(S, K, T, r, sigma):
 
 def get_us_gex_data(symbol: str):
     """
-    獲取美股月底及下月底期權數據，修正 Call/Put Wall 為 Open Interest 基準
+    獲取美股月底及下月底期權數據（精準修正 Call/Put Wall 與 Gamma Flip）
     """
     tk = yf.Ticker(symbol)
     
@@ -51,9 +51,9 @@ def get_us_gex_data(symbol: str):
     today = pd.Timestamp.now()
     r = 0.045
     
-    # 履約價過濾區間 (現價 ±35%)
-    min_strike = spot_price * 0.65
-    max_strike = spot_price * 1.35
+    # 修正 1：將搜尋範圍縮小至現價 ±18%，排除遠期 LEAPS 與極端 OTM 尾部雜訊
+    min_strike = spot_price * 0.82
+    max_strike = spot_price * 1.18
     
     all_calls_list = []
     all_puts_list = []
@@ -100,27 +100,28 @@ def get_us_gex_data(symbol: str):
     df_merged = pd.merge(df_calls, df_puts, on='strike', how='outer').fillna(0)
     df_merged['net_gex'] = df_merged['call_gex'] + df_merged['put_gex']
     
-    # --- 3. 精準計算 Call Wall & Put Wall (基於未平倉量 OI) ---
-    # Call Wall: 現價上方 (或包含現價) 未平倉量最大的 Call 履約價
-    otm_calls = df_merged[df_merged['strike'] >= spot_price * 0.98]
+    # 修正 2：嚴格區分現價上方 (Call Wall) 與現價下方 (Put Wall)
+    # Call Wall: 嚴格 >= 現價，取 Open Interest 最大者
+    otm_calls = df_merged[df_merged['strike'] >= spot_price]
     if not otm_calls.empty:
         call_wall = otm_calls.loc[otm_calls['call_oi'].idxmax()]['strike']
     else:
         call_wall = df_merged.loc[df_merged['call_oi'].idxmax()]['strike']
         
-    # Put Wall: 現價下方 (或包含現價) 未平倉量最大的 Put 履約價
-    otm_puts = df_merged[df_merged['strike'] <= spot_price * 1.02]
+    # Put Wall: 嚴格 <= 現價，取 Open Interest 最大者
+    otm_puts = df_merged[df_merged['strike'] <= spot_price]
     if not otm_puts.empty:
         put_wall = otm_puts.loc[otm_puts['put_oi'].idxmax()]['strike']
     else:
         put_wall = df_merged.loc[df_merged['put_oi'].idxmax()]['strike']
     
-    # --- 4. 計算 Gamma Flip (Net GEX 正負轉折點) ---
+    # 修正 3：Gamma Flip 取離「現價最近」的零點轉折，而非最遠者
     df_sorted = df_merged.sort_values('strike')
-    zero_crossings = df_sorted[(df_sorted['net_gex'] * df_sorted['net_gex'].shift(1)) <= 0]
+    zero_crossings = df_sorted[(df_sorted['net_gex'] * df_sorted['net_gex'].shift(1)) <= 0].copy()
     
     if not zero_crossings.empty:
-        gamma_flip = zero_crossings.iloc[0]['strike']
+        zero_crossings['dist'] = (zero_crossings['strike'] - spot_price).abs()
+        gamma_flip = zero_crossings.sort_values('dist').iloc[0]['strike']
     else:
         gamma_flip = df_sorted.iloc[(df_sorted['net_gex'].abs()).idxmin()]['strike']
         
